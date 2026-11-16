@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: project-combiner-web
+    env: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8787
+      - key: STATIC_DIR
+        value: /app/dist
+      - key: RUST_LOG
+        value: info

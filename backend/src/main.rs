@@ -20,24 +20,45 @@ struct PreviewQuery {
 
 #[tokio::main]
 async fn main() {
+    // Initialize logging
     tracing_subscriber::fmt::init();
 
+    // Permissive CORS for development; in production, the backend serves the frontend
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Get configuration from environment variables
+    let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "../frontend/dist".to_string());
+    let index_path = format!("{}/index.html", static_dir);
+    
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "8787".to_string())
+        .parse::<u16>()
+        .expect("PORT must be a valid number");
+
+    // Build the application router
     let app = Router::new()
+        // API Routes
         .route("/api/health", get(health))
         .route("/api/browse", post(browse_dir))
         .route("/api/combine", post(combine))
         .route("/api/search", post(search_files))
         .route("/api/tree", post(get_tree))
         .route("/api/preview", get(preview_file))
+        // Static File Serving (Frontend)
+        .fallback_service(
+            tower_http::services::ServeDir::new(&static_dir)
+                .fallback(tower_http::services::ServeFile::new(index_path)),
+        )
         .layer(cors);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
-    tracing::info!("Listening on {}", addr);
+    // Bind to 0.0.0.0 for Docker/Render compatibility
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    tracing::info!("🚀 Server starting on {}", addr);
+    tracing::info!("📁 Serving static files from {}", static_dir);
+
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -48,15 +69,8 @@ async fn health() -> Json<serde_json::Value> {
 
 async fn browse_dir(Json(req): Json<BrowseRequest>) -> Json<BrowseResponse> {
     let path = std::path::PathBuf::from(&req.path);
-    tracing::info!("browse_dir: requested path = {:?}", path);
     if !path.exists() || !path.is_dir() {
-        let msg = format!(
-            "Directory not found or not a directory: {:?} (exists={}, is_dir={})",
-            path,
-            path.exists(),
-            path.is_dir()
-        );
-        tracing::warn!("{}", msg);
+        let msg = format!("Directory not found: {:?}", path);
         return Json(BrowseResponse {
             success: false,
             error: Some(msg),
@@ -64,23 +78,12 @@ async fn browse_dir(Json(req): Json<BrowseRequest>) -> Json<BrowseResponse> {
         });
     }
     let mut entries = vec![];
-    match std::fs::read_dir(&path) {
-        Ok(read) => {
-            for entry in read.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                let entry_path = entry.path().to_string_lossy().to_string();
-                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                entries.push(FileEntry { name, path: entry_path, is_dir });
-            }
-        }
-        Err(e) => {
-            let msg = format!("read_dir failed for {:?}: {}", path, e);
-            tracing::error!("{}", msg);
-            return Json(BrowseResponse {
-                success: false,
-                error: Some(msg),
-                entries: vec![],
-            });
+    if let Ok(read) = std::fs::read_dir(&path) {
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let entry_path = entry.path().to_string_lossy().to_string();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            entries.push(FileEntry { name, path: entry_path, is_dir });
         }
     }
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
@@ -116,20 +119,13 @@ async fn get_tree(Json(req): Json<TreeRequest>) -> Json<TreeResponse> {
 async fn preview_file(Query(q): Query<PreviewQuery>) -> Json<serde_json::Value> {
     match std::fs::read_to_string(&q.path) {
         Ok(content) => {
-            // Cap preview at ~2MB to avoid blowing up the browser
             let capped = if content.len() > 2 * 1024 * 1024 {
-                format!(
-                    "{}...\n\n[Preview truncated at 2 MB — full file is at {}]",
-                    &content[..2 * 1024 * 1024],
-                    q.path
-                )
+                format!("{}...\n\n[Preview truncated at 2 MB]", &content[..2 * 1024 * 1024])
             } else {
                 content
             };
             Json(serde_json::json!({ "content": capped }))
         }
-        Err(e) => Json(serde_json::json!({
-            "error": format!("Could not read '{}': {}", q.path, e)
-        })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
