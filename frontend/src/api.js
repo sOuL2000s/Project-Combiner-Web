@@ -58,20 +58,34 @@ export async function* walkDirectoryHandle(dirHandle, opts) {
     excludedDirs = [],
     excludedFiles = [],
     maxFileSize = 0,
-    prefix = ''
+    prefix = '',
+    gitignorePatterns = []
   } = opts || {}
   const excludedDirsSet = new Set(excludedDirs)
   const excludedFilesSet = new Set(excludedFiles)
 
+  function isGitignored(relPath, isDir) {
+    if (!gitignorePatterns.length) return false
+    let ignored = false
+    for (const { regex, negated, dirOnly } of gitignorePatterns) {
+      if (dirOnly && !isDir) continue
+      if (regex.test(relPath)) ignored = !negated
+    }
+    return ignored
+  }
+
   for await (const [name, handle] of dirHandle.entries()) {
+    const childRel = prefix ? `${prefix}/${name}` : name
     if (handle.kind === 'directory') {
       if (excludedDirsSet.has(name)) continue
+      if (isGitignored(childRel, true)) continue
       yield* walkDirectoryHandle(handle, {
         ...opts,
-        prefix: prefix ? `${prefix}/${name}` : name
+        prefix: childRel
       })
     } else {
       if (excludedFilesSet.has(name)) continue
+      if (isGitignored(childRel, false)) continue
       try {
         const file = await handle.getFile()
         if (maxFileSize > 0 && file.size > maxFileSize) continue
@@ -79,7 +93,7 @@ export async function* walkDirectoryHandle(dirHandle, opts) {
         const text = await file.text()
         // Heuristic: if it contains null bytes it's probably binary
         if (text.includes('\u0000')) continue
-        yield { relPath: prefix ? `${prefix}/${name}` : name, content: text }
+        yield { relPath: childRel, content: text }
       } catch {
         // Unreadable / binary — skip silently (mirrors desktop behavior)
         continue
@@ -146,4 +160,32 @@ export async function copyToClipboard(text) {
   try { ok = document.execCommand('copy') } catch {}
   document.body.removeChild(ta)
   return ok
+}
+
+// Parse a .gitignore file's text into regex matchers usable by
+// walkDirectoryHandle(). Handles negation (!), dir-only (trailing /),
+// and the common glob tokens * ** ?. Not a full gitignore implementation
+// (no nested .gitignore files, no character classes), but covers the
+// patterns the desktop app supported via `pathspec`.
+export function parseGitignore(text) {
+  const patterns = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const negated = line.startsWith('!')
+    const body0 = negated ? line.slice(1) : line
+    const dirOnly = body0.endsWith('/')
+    const body = dirOnly ? body0.slice(0, -1) : body0
+    const escaped = body
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '.*')
+      .replace(/\*/g, '[^/]*')
+      .replace(/\?/g, '[^/]')
+    patterns.push({
+      regex: new RegExp('(^|/)' + escaped + '(/|$)'),
+      negated,
+      dirOnly
+    })
+  }
+  return patterns
 }

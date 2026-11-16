@@ -6,7 +6,7 @@ import SearchSection from './components/SearchSection'
 import FileTree from './components/FileTree'
 import LogPanel from './components/LogPanel'
 import PreviewModal from './components/PreviewModal'
-import { combineFiles, copyToClipboard, walkDirectoryHandle as walkDirHandle } from './api'
+import { combineFiles, copyToClipboard, walkDirectoryHandle as walkDirHandle, parseGitignore } from './api'
 
 const DEFAULT_STATE = {
   rootDir: '',
@@ -142,12 +142,26 @@ export default function App() {
       const maxSize = parseInt(state.maxFileSize) || 0
       const useInclude = includedDirs.length > 0 || includedFiles.length > 0
 
+      // Load .gitignore patterns if the toggle is on. Missing file = no patterns.
+      let gitignorePatterns = []
+      if (state.useGitignore) {
+        try {
+          const giHandle = await dirHandle.getFileHandle('.gitignore')
+          const giFile = await giHandle.getFile()
+          gitignorePatterns = parseGitignore(await giFile.text())
+          addLog(`📄 Loaded ${gitignorePatterns.length} .gitignore pattern(s)`)
+        } catch {
+          addLog('ℹ️ No .gitignore found in project root — toggle has no effect')
+        }
+      }
+
       const files = []
       const t0 = Date.now()
       for await (const item of walkDirHandle(dirHandle, {
         excludedDirs,
         excludedFiles,
-        maxFileSize: maxSize
+        maxFileSize: maxSize,
+        gitignorePatterns
       })) {
         if (useInclude) {
           const parts = item.relPath.split('/')

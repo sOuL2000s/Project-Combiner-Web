@@ -69,7 +69,6 @@ pub struct TreeRequest {
     pub excluded_files: Vec<String>,
     pub included_dirs: Vec<String>,
     pub included_files: Vec<String>,
-    #[allow(dead_code)]
     pub use_gitignore: bool,
 }
 

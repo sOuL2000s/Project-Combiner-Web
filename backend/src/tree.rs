@@ -11,6 +11,24 @@ pub fn generate_tree(req: TreeRequest) -> TreeResponse {
         };
     }
 
+    // Build a .gitignore matcher when the toggle is on and a .gitignore exists.
+    // This keeps the tree header consistent with combiner.rs, which already
+    // respects gitignore via WalkBuilder.
+    let gitignore: Option<ignore::gitignore::Gitignore> = if req.use_gitignore {
+        let gi_path = root.join(".gitignore");
+        if gi_path.exists() {
+            let mut builder = ignore::gitignore::GitignoreBuilder::new(&root);
+            // add() returns Option<Error>; ignore the result — build() will
+            // surface any real parse errors.
+            let _ = builder.add(&gi_path);
+            builder.build().ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let use_include = !req.included_dirs.is_empty() || !req.included_files.is_empty();
     let mut lines: Vec<String> = vec![format!(
         "{}/",
@@ -19,7 +37,15 @@ pub fn generate_tree(req: TreeRequest) -> TreeResponse {
             .unwrap_or_else(|| req.root_dir.clone())
     )];
 
-    walk_dir(&root, &root, "", &req, use_include, &mut lines);
+    walk_dir(
+        &root,
+        &root,
+        "",
+        &req,
+        use_include,
+        &mut lines,
+        gitignore.as_ref(),
+    );
 
     TreeResponse {
         success: true,
@@ -33,11 +59,20 @@ fn should_include(
     root: &Path,
     req: &TreeRequest,
     is_dir: bool,
+    gitignore: Option<&ignore::gitignore::Gitignore>,
 ) -> bool {
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+
+    // Respect .gitignore — mirrors Python's gitignore_spec.match_file().
+    if let Some(gi) = gitignore {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        if gi.matched(rel, is_dir).is_ignore() {
+            return false;
+        }
+    }
 
     if req.excluded_dirs.iter().any(|d| d == &name) && is_dir {
         return false;
@@ -76,6 +111,7 @@ fn walk_dir(
     req: &TreeRequest,
     use_include: bool,
     lines: &mut Vec<String>,
+    gitignore: Option<&ignore::gitignore::Gitignore>,
 ) {
     let mut items: Vec<PathBuf> = Vec::new();
     if let Ok(read) = std::fs::read_dir(current) {
@@ -96,7 +132,7 @@ fn walk_dir(
                 continue;
             }
 
-            if !should_include(&p, root, req, is_dir) {
+            if !should_include(&p, root, req, is_dir, gitignore) {
                 continue;
             }
             if is_dir && use_include {
@@ -113,7 +149,7 @@ fn walk_dir(
                     // descent via a throwaway writer so this directory is not
                     // rendered; it only exists to reach an inner include.
                     let mut scratch: Vec<String> = Vec::new();
-                    walk_dir(&p, root, prefix, req, use_include, &mut scratch);
+                    walk_dir(&p, root, prefix, req, use_include, &mut scratch, gitignore);
                     continue;
                 }
             }
@@ -139,7 +175,7 @@ fn walk_dir(
         lines.push(format!("{}{}{}{}", prefix, connector, name, suffix));
         if item.is_dir() {
             let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
-            walk_dir(item, root, &new_prefix, req, use_include, lines);
+            walk_dir(item, root, &new_prefix, req, use_include, lines, gitignore);
         }
     }
 }

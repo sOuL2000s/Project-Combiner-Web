@@ -95,7 +95,7 @@ export default function ConfigSection({ state, setState, addLog }) {
     setState(s => ({
       ...s,
       rootDir: `[Native folder] ${picked.pathHint}`,
-      outputPath: ''
+      outputPath: 'combined_project_files.txt'
     }))
     addLog(`📁 Native folder selected: ${picked.pathHint}`)
     addLog('ℹ️ Combine will read files in-browser and save via native save dialog.')
@@ -284,7 +284,7 @@ export default function ConfigSection({ state, setState, addLog }) {
       setState(s => ({
         ...s,
         rootDir: `[Native folder] ${handle.name}`,
-        outputPath: ''
+        outputPath: 'combined_project_files.txt'
       }))
       addLog(`📁 Dropped folder: ${handle.name}`)
     } catch (err) {
@@ -416,31 +416,18 @@ export default function ConfigSection({ state, setState, addLog }) {
                   .map(e => (
                     <div
                       key={e.path || e.name}
-                      role="button"
-                      tabIndex={0}
-                      // 1. Prevent browser from highlighting text when clicked
-                      onMouseDown={(ev) => ev.preventDefault()}
-                      // 2. Use onMouseUp instead of onClick (bypasses React's synthetic click bugs)
-                      onMouseUp={() => pickDir(e)}
-                      onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') pickDir(e) }}
                       style={{
-                        padding: '8px 10px',
-                        cursor: 'pointer',
+                        padding: '4px 10px',
                         borderRadius: '6px',
                         fontFamily: 'monospace',
                         fontSize: '13px',
-                        color: 'var(--fg)', 
+                        color: 'var(--fg)',
                         userSelect: 'none',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '8px',
-                        // 3. Add a subtle border on hover so we visually confirm it's clickable
+                        justifyContent: 'space-between',
+                        width: '100%',
                         border: '1px solid transparent',
-                        // THE MISSING MAGIC:
-                        backgroundColor: 'transparent',
-                        position: 'relative',
-                        zIndex: 11,
-                        pointerEvents: 'auto'
                       }}
                       onMouseEnter={(ev) => {
                         ev.currentTarget.style.background = 'var(--bg-elev-2)'
@@ -451,11 +438,29 @@ export default function ConfigSection({ state, setState, addLog }) {
                         ev.currentTarget.style.borderColor = 'transparent'
                       }}
                     >
-                      <span style={{ pointerEvents: 'none' }}>📁</span> 
-                      <span style={{ pointerEvents: 'none' }}>{e.name}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span>📁</span>
+                        <span>{e.name}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => pickDir(e)}
+                        style={{
+                          padding: '4px 8px',
+                          cursor: 'pointer',
+                          background: 'var(--accent)',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '11px',
+                          fontWeight: 'bold',
+                        }}
+                      >
+                        Enter ➔
+                      </button>
                     </div>
                   ))}
-                
+
                 {entries
                   .filter(e => !e.isDir)
                   .map(e => (
@@ -471,7 +476,7 @@ export default function ConfigSection({ state, setState, addLog }) {
                         gap: '8px'
                       }}
                     >
-                      <span>📄</span> 
+                      <span>📄</span>
                       <span>{e.name}</span>
                     </div>
                   ))}
