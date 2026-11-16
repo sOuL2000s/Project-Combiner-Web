@@ -1,0 +1,36 @@
+# Root-level ignores
+node_modules/
+dist/
+target/
+build/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Combined output
+combined_project_files.txt
+last_session.json
+
+# Rust
+Cargo.lock
+combined_project_files.txt
