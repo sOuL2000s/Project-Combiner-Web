@@ -7,11 +7,11 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stage 2: Build Backend ---
-FROM rust:1.83-slim AS backend-builder
+FROM rust:slim AS backend-builder
 WORKDIR /app/backend
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev g++ && rm -rf /var/lib/apt/lists/*
 
 # MEMORY OPTIMIZATION FOR RENDER FREE TIER:
 # Limit cargo to 1 parallel job to avoid OOM (Out of Memory) errors
