@@ -32,5 +32,5 @@ combined_project_files.txt
 last_session.json
 
 # Rust
-Cargo.lock
+# Cargo.lock
 combined_project_files.txt

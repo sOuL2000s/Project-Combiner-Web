@@ -18,7 +18,9 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 ENV CARGO_BUILD_JOBS=1
 
 # Cache dependencies: Build a dummy project first
-COPY backend/Cargo.toml backend/Cargo.lock ./
+COPY backend/Cargo.toml ./
+# Copy Cargo.lock if it exists (it will now that we un-ignored it)
+COPY backend/Cargo.lock* ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release
 RUN rm -rf src
