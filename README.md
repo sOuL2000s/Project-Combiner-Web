@@ -1,5 +1,9 @@
 # 📁 Project File Combiner Pro — Web Edition
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Online-brightgreen?style=for-the-badge&logo=render)](https://project-combiner-web.onrender.com/)
+
+> **Try it now:** [project-combiner-web.onrender.com](https://project-combiner-web.onrender.com/)
+
 A full-featured web port of the **Project File Combiner** desktop app.  
 Feed an entire codebase into a single consolidated `.txt` file — complete with a directory tree header, per-file metadata, duplicate detection, and content search — all from your browser.
 
