@@ -19,7 +19,7 @@ ENV CARGO_BUILD_JOBS=1
 
 # Cache dependencies: Build a dummy project first
 COPY backend/Cargo.toml ./
-# Copy Cargo.lock if it exists (it will now that we un-ignored it)
+# Copy Cargo.lock if it exists
 COPY backend/Cargo.lock* ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release
