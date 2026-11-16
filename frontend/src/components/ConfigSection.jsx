@@ -3,7 +3,6 @@ import { browseDir } from '../api'
 
 const LS_KEY = 'combiner.lastFolder'
 
-// ---- Capability detection (self-contained, no import dependency) -----------
 function detectNativeFS() {
   if (typeof window === 'undefined') return false
   try {
@@ -19,12 +18,6 @@ function autoOutputPath(root) {
   const sep = root.includes('\\') ? '\\' : '/'
   const clean = root.replace(/[\\/]+$/, '')
   return `${clean}${sep}combined_project_files.txt`
-}
-
-function joinPath(base, name) {
-  if (!base) return name
-  const sep = base.includes('\\') ? '\\' : '/'
-  return base.replace(/[\\/]+$/, '') + sep + name
 }
 
 function parentOf(path) {
@@ -45,11 +38,12 @@ export default function ConfigSection({ state, setState, addLog }) {
   const [currentPath, setCurrentPath] = useState('')
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(false)
+  const [browseError, setBrowseError] = useState('')
   const [nativeFolder, setNativeFolder] = useState(null)
   const [nativeSaved, setNativeSaved] = useState(null)
   const [nativeAvailable] = useState(detectNativeFS)
+  const [dragOver, setDragOver] = useState(false)
 
-  // Keep global handles in sync so App.jsx can access them during combine
   useEffect(() => {
     window.__combinerNativeDirHandle = nativeFolder?.handle || null
   }, [nativeFolder])
@@ -58,12 +52,10 @@ export default function ConfigSection({ state, setState, addLog }) {
     window.__combinerNativeSaveHandle = nativeSaved?.handle || null
   }, [nativeSaved])
 
-  // Clear stale handles if the user types into the root field
   useEffect(() => {
     if (!state.rootDir.startsWith('[Native folder]')) {
       if (nativeFolder) setNativeFolder(null)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.rootDir])
 
   async function handleNativePickFolder() {
@@ -71,8 +63,6 @@ export default function ConfigSection({ state, setState, addLog }) {
       addLog('❌ This browser does not support the native folder picker. Use Chrome or Edge.')
       return
     }
-    // IMPORTANT: showDirectoryPicker() must be called from a user gesture,
-    // and it MUST NOT be awaited before the call. We call it directly.
     let picked
     try {
       const handle = await window.showDirectoryPicker({ mode: 'read' })
@@ -80,10 +70,6 @@ export default function ConfigSection({ state, setState, addLog }) {
     } catch (e) {
       if (e && e.name === 'AbortError') {
         addLog('ℹ️ Native folder picker cancelled.')
-        return
-      }
-      if (e && e.name === 'SecurityError') {
-        addLog('❌ Native picker blocked — must be served over https:// or http://localhost')
         return
       }
       addLog(`❌ Native folder error: ${e.name || ''} ${e.message || e}`)
@@ -98,7 +84,6 @@ export default function ConfigSection({ state, setState, addLog }) {
       outputPath: 'combined_project_files.txt'
     }))
     addLog(`📁 Native folder selected: ${picked.pathHint}`)
-    addLog('ℹ️ Combine will read files in-browser and save via native save dialog.')
   }
 
   async function handleNativeSaveFile() {
@@ -132,35 +117,34 @@ export default function ConfigSection({ state, setState, addLog }) {
   function clearNativeFolder() {
     setNativeFolder(null)
     setNativeSaved(null)
-    setState(s => ({
-      ...s,
-      rootDir: '',
-      outputPath: ''
-    }))
+    setState(s => ({ ...s, rootDir: '', outputPath: '' }))
     addLog('🧹 Native folder selection cleared.')
   }
 
-  // ---- Custom in-app browser (fallback + path-based navigation) ------------
+  // Robust directory loader — does NOT clear entries until the request resolves
   async function loadDir(path) {
     if (!path) {
       addLog('❌ loadDir called with empty path')
       return
     }
     setLoading(true)
+    setBrowseError('')
     addLog(`📂 Loading: ${path}`)
     try {
       const res = await browseDir(path)
-      if (res.success) {
-        setEntries(res.entries)
+      if (res && res.success) {
+        setEntries(Array.isArray(res.entries) ? res.entries : [])
         setCurrentPath(path)
         addLog(`✅ Loaded ${res.entries.length} entries from ${path}`)
         try { localStorage.setItem(LS_KEY, path) } catch {}
       } else {
-        addLog(`❌ Browse error: ${res.error || 'unknown'} (path: "${path}")`)
-        // Keep currentPath unchanged on failure so the user can still go Up
+        const msg = (res && res.error) || 'unknown'
+        setBrowseError(msg)
+        addLog(`❌ Browse error: ${msg} (path: "${path}")`)
         setEntries([])
       }
     } catch (e) {
+      setBrowseError(e.message || String(e))
       addLog(`❌ Browse request failed: ${e.message || e} (path: "${path}")`)
       setEntries([])
     } finally {
@@ -180,22 +164,13 @@ export default function ConfigSection({ state, setState, addLog }) {
     loadDir(start)
   }
 
+  // Navigate into a folder (does NOT clear entries first — smooth UX)
   function pickDir(entry) {
     if (!entry || !entry.path) {
       addLog(`❌ Cannot open folder: missing path for "${entry?.name || '?'}"`)
       return
     }
-    
-    addLog(`🖱️ Clicked folder: ${entry.name}`) 
-    
-    // 1. Immediately set loading & clear old entries so the user sees a change
-    setLoading(true)
-    setEntries([])
-    
-    // 2. Update the path so the breadcrumbs change immediately
-    setCurrentPath(entry.path)
-    
-    // 3. Then fetch the new directory
+    addLog(`🖱️ Opening folder: ${entry.name}`)
     loadDir(entry.path)
   }
 
@@ -205,8 +180,6 @@ export default function ConfigSection({ state, setState, addLog }) {
   }
 
   function jumpToDrive(drive) {
-    // Normalize "C:/" → "C:/" and "C:" → "C:/" so the backend gets a
-    // path that resolves cleanly on Windows.
     const normalized = /^[a-zA-Z]:$/.test(drive) ? drive + '/' : drive
     addLog(`📂 Jumping to drive: ${normalized}`)
     loadDir(normalized)
@@ -221,12 +194,10 @@ export default function ConfigSection({ state, setState, addLog }) {
     setShowBrowse(false)
   }
 
-  // Windows drive shortcuts
   const drives = navigator.userAgent.includes('Windows')
     ? ['C:/', 'D:/', 'E:/', 'F:/', 'G:/', 'H:/']
     : ['/']
 
-  // Breadcrumb segments
   const sep = currentPath.includes('\\') ? '\\' : '/'
   const crumbs = (() => {
     if (!currentPath) return []
@@ -249,11 +220,6 @@ export default function ConfigSection({ state, setState, addLog }) {
     }
     return out
   })()
-
-  // (removed document-level click delegation — React's onClick on each
-  //  .browse-entry button is sufficient and does not hijack other controls)
-
-  const [dragOver, setDragOver] = useState(false)
 
   function onDragOver(e) {
     e.preventDefault()
@@ -292,6 +258,12 @@ export default function ConfigSection({ state, setState, addLog }) {
     }
   }
 
+  // Backend serializes is_dir (snake_case). Handle both defensively.
+  const isDir = (e) => e.is_dir === true || e.isDir === true
+
+  const dirs = entries.filter(isDir)
+  const files = entries.filter(e => !isDir(e))
+
   return (
     <div
       className={'card' + (dragOver ? ' drag-over' : '')}
@@ -326,15 +298,11 @@ export default function ConfigSection({ state, setState, addLog }) {
             placeholder="e.g. D:/72 projects of python/my-project"
           />
           {nativeAvailable && (
-            <button
-              className="btn btn-secondary"
-              onClick={handleNativePickFolder}
-              title="Open OS folder picker (Chrome/Edge)"
-            >
-              📁 Choose Folder
+            <button className="btn btn-secondary" onClick={handleNativePickFolder}>
+              📁 Choose
             </button>
           )}
-          <button className="btn btn-ghost" onClick={openBrowser} title="In-app browser">
+          <button className="btn btn-ghost" onClick={openBrowser}>
             🗂 Browse
           </button>
         </div>
@@ -351,13 +319,12 @@ export default function ConfigSection({ state, setState, addLog }) {
       {!nativeAvailable && (
         <div className="msg warn" style={{ marginTop: 6 }}>
           ⚠️ Your browser doesn't support the OS-native folder picker.
-          Use the 📂 Browse button or Chrome/Edge for native.
         </div>
       )}
 
       {nativeFolder && (
-        <div className="msg ok" style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>✅ Native folder: <b>{nativeFolder.pathHint}</b> — combine will run in-browser</span>
+        <div className="msg ok" style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <span>✅ Native folder: <b>{nativeFolder.pathHint}</b></span>
           <button className="ghost" onClick={clearNativeFolder} style={{ padding: '2px 10px', fontSize: 12 }}>
             Clear
           </button>
@@ -371,116 +338,63 @@ export default function ConfigSection({ state, setState, addLog }) {
               <button key={d} className="ghost" onClick={() => jumpToDrive(d)}>{d}</button>
             ))}
           </div>
+
           <div className="browse-crumbs">
-            {crumbs.map((c, i) => (
-              <span key={i}>
-                <button className="crumb" onClick={() => loadDir(c.path)}>{c.label}</button>
-                {i < crumbs.length - 1 && <span className="crumb-sep">›</span>}
-              </span>
-            ))}
+            {crumbs.length === 0 ? (
+              <span className="crumb-sep">(no path)</span>
+            ) : (
+              crumbs.map((c, i) => (
+                <span key={i}>
+                  <button className="crumb" onClick={() => loadDir(c.path)}>{c.label}</button>
+                  {i < crumbs.length - 1 && <span className="crumb-sep">›</span>}
+                </span>
+              ))
+            )}
           </div>
+
           <div className="browse-actions">
             <button className="ghost" onClick={goUp} disabled={!parentOf(currentPath)}>⬆ Up</button>
-            <button className="ghost" onClick={applyCurrentAsRoot}>✅ Use This Folder</button>
+            <button className="ghost" onClick={applyCurrentAsRoot} disabled={!currentPath}>
+              ✅ Use This Folder
+            </button>
             <button className="ghost" onClick={() => setShowBrowse(false)}>✕ Close</button>
           </div>
 
-          <div style={{
-            marginTop: '10px',
-            background: 'var(--bg)',
-            border: '1px solid var(--border)',
-            borderRadius: '8px',
-            maxHeight: '240px',
-            overflowY: 'auto',
-            padding: '8px',
-            fontFamily: 'monospace',
-            fontSize: '12px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '2px',
-            // THE MISSING MAGIC:
-            position: 'relative',
-            zIndex: 10,
-            pointerEvents: 'auto'
-          }}>
-            {loading ? (
-              <div style={{ opacity: 0.6, padding: '8px' }}>Loading…</div>
-            ) : entries.length === 0 ? (
-              <div style={{ opacity: 0.6, padding: '8px' }}>
-                Empty or unreadable. Check the log panel — click ⬆ Up or ✅ Use This Folder.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
-                {entries
-                  .filter(e => e.isDir)
-                  .map(e => (
-                    <div
-                      key={e.path || e.name}
-                      style={{
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                        fontFamily: 'monospace',
-                        fontSize: '13px',
-                        color: 'var(--fg)',
-                        userSelect: 'none',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        width: '100%',
-                        border: '1px solid transparent',
-                      }}
-                      onMouseEnter={(ev) => {
-                        ev.currentTarget.style.background = 'var(--bg-elev-2)'
-                        ev.currentTarget.style.borderColor = 'var(--border)'
-                      }}
-                      onMouseLeave={(ev) => {
-                        ev.currentTarget.style.background = 'transparent'
-                        ev.currentTarget.style.borderColor = 'transparent'
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span>📁</span>
-                        <span>{e.name}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => pickDir(e)}
-                        style={{
-                          padding: '4px 8px',
-                          cursor: 'pointer',
-                          background: 'var(--accent)',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: '4px',
-                          fontSize: '11px',
-                          fontWeight: 'bold',
-                        }}
-                      >
-                        Enter ➔
-                      </button>
-                    </div>
-                  ))}
+          {browseError && (
+            <div className="msg err" style={{ marginBottom: 8, fontSize: 12 }}>
+              ⚠️ {browseError}
+            </div>
+          )}
 
-                {entries
-                  .filter(e => !e.isDir)
-                  .map(e => (
-                    <div
-                      key={e.name}
-                      style={{
-                        padding: '8px 10px',
-                        opacity: 0.5,
-                        fontFamily: 'monospace',
-                        fontSize: '13px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px'
-                      }}
+          <div className="browse-list">
+            {loading ? (
+              <div className="browse-empty">Loading…</div>
+            ) : entries.length === 0 ? (
+              <div className="browse-empty">Empty or unreadable.</div>
+            ) : (
+              <>
+                {dirs.map(e => (
+                  <div
+                    key={e.path || e.name}
+                    className="browse-item dir"
+                    onClick={() => pickDir(e)}
+                    title={`Open ${e.name}`}
+                  >
+                    <span className="browse-item-name">📁 {e.name}</span>
+                    <button
+                      className="browse-enter"
+                      onClick={(ev) => { ev.stopPropagation(); pickDir(e) }}
                     >
-                      <span>📄</span>
-                      <span>{e.name}</span>
-                    </div>
-                  ))}
-              </div>
+                      Enter ➔
+                    </button>
+                  </div>
+                ))}
+                {files.map(e => (
+                  <div key={e.path || e.name} className="browse-item file">
+                    <span className="browse-item-name">📄 {e.name}</span>
+                  </div>
+                ))}
+              </>
             )}
           </div>
         </div>
@@ -498,11 +412,7 @@ export default function ConfigSection({ state, setState, addLog }) {
           placeholder="Full path to output .txt file"
         />
         {nativeAvailable && (
-          <button
-            className="ghost"
-            onClick={handleNativeSaveFile}
-            title="Native — opens OS save dialog (Chrome/Edge)"
-          >
+          <button className="ghost" onClick={handleNativeSaveFile}>
             💾 Save As
           </button>
         )}

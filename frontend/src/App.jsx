@@ -112,6 +112,7 @@ export default function App() {
   const [lastResult, setLastResult] = useState(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewContent, setPreviewContent] = useState('')
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     document.body.className = theme
@@ -346,6 +347,10 @@ export default function App() {
     try {
       const ok = await copyToClipboard(text)
       addLog(ok ? '📋 Copied to clipboard' : '❌ Clipboard access denied by browser')
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }
     } catch (e) {
       addLog(`❌ Copy error: ${e.message}`)
     }
@@ -392,10 +397,18 @@ export default function App() {
           </button>
           <button
             className="action-btn"
-            style={{ flex: 1, background: 'var(--bg2)', color: 'var(--fg)', border: '1px solid var(--border)' }}
+            style={{
+              flex: 1,
+              background: copied ? 'var(--success)' : 'var(--bg2)',
+              color: copied ? '#fff' : 'var(--fg)',
+              border: '1px solid ' + (copied ? 'var(--success)' : 'var(--border)'),
+              transition: 'all 0.2s',
+              cursor: copied ? 'default' : 'pointer'
+            }}
             onClick={handleCopy}
+            disabled={copied}
           >
-            📋 Copy to Clipboard
+            {copied ? '✅ Copied!' : '📋 Copy to Clipboard'}
           </button>
         </div>
       )}
