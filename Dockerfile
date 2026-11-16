@@ -13,6 +13,10 @@ WORKDIR /app/backend
 # Install system dependencies
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
+# MEMORY OPTIMIZATION FOR RENDER FREE TIER:
+# Limit cargo to 1 parallel job to avoid OOM (Out of Memory) errors
+ENV CARGO_BUILD_JOBS=1
+
 # Cache dependencies: Build a dummy project first
 COPY backend/Cargo.toml backend/Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
@@ -28,7 +32,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y libssl3 ca-certificates libc6 && rm -rf /var/lib/apt/lists/*
 
 # Copy frontend assets from Stage 1
 COPY --from=frontend-builder /app/frontend/dist /app/dist
