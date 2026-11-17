@@ -244,6 +244,10 @@ export async function combineFilesUpload(payload, files) {
     method: 'POST',
     body: formData
   })
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(`Server error (${r.status}): ${text}`)
+  }
   return r.json()
 }
 

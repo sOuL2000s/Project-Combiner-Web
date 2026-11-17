@@ -4,7 +4,7 @@ mod search;
 mod tree;
 
 use axum::{
-    extract::{Multipart, Query},
+    extract::{DefaultBodyLimit, Multipart, Query},
     routing::{get, post},
     Json, Router,
 };
@@ -53,6 +53,7 @@ async fn main() {
             tower_http::services::ServeDir::new(&static_dir)
                 .fallback(tower_http::services::ServeFile::new(index_path)),
         )
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024)) // 100MB limit
         .layer(cors);
 
     // Bind to 0.0.0.0 for Docker/Render compatibility
@@ -114,18 +115,39 @@ async fn combine_upload(mut multipart: Multipart) -> Json<CombineResponse> {
     let mut files = vec![];
     let mut config = None;
 
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or_default().to_string();
-        if name == "config" {
-            if let Ok(bytes) = field.bytes().await {
-                if let Ok(req) = serde_json::from_slice::<CombineRequest>(&bytes) {
-                    config = Some(req);
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                let name = field.name().unwrap_or_default().to_string();
+                if name == "config" {
+                    if let Ok(bytes) = field.bytes().await {
+                        if let Ok(req) = serde_json::from_slice::<CombineRequest>(&bytes) {
+                            config = Some(req);
+                        } else {
+                            tracing::error!("Failed to parse config JSON");
+                        }
+                    }
+                } else if name == "files" {
+                    let file_name = field.file_name().unwrap_or_default().to_string();
+                    if let Ok(content) = field.text().await {
+                        files.push((file_name, content));
+                    } else {
+                        tracing::error!("Failed to read text for file: {}", file_name);
+                    }
                 }
             }
-        } else if name == "files" {
-            let file_name = field.file_name().unwrap_or_default().to_string();
-            if let Ok(content) = field.text().await {
-                files.push((file_name, content));
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!("Multipart error: {}", e);
+                return Json(CombineResponse {
+                    success: false,
+                    output_path: String::new(),
+                    content: None,
+                    files_processed: 0,
+                    total_size: 0,
+                    duplicates: vec![],
+                    log: vec![format!("❌ Multipart Error: {}", e)],
+                });
             }
         }
     }
@@ -138,21 +160,27 @@ async fn combine_upload(mut multipart: Multipart) -> Json<CombineResponse> {
             files_processed: 0,
             total_size: 0,
             duplicates: vec![],
-            log: vec!["❌ Error: Missing configuration in multipart request".to_string()],
+            log: vec!["❌ Error: Missing or invalid configuration in multipart request".to_string()],
         });
     };
 
     match combiner::combine_uploaded_files(req, files) {
-        Ok(resp) => Json(resp),
-        Err(e) => Json(CombineResponse {
-            success: false,
-            output_path: String::new(),
-            content: None,
-            files_processed: 0,
-            total_size: 0,
-            duplicates: vec![],
-            log: vec![format!("❌ Error: {}", e)],
-        }),
+        Ok(resp) => {
+            tracing::info!("✅ Combined {} files successfully", resp.files_processed);
+            Json(resp)
+        }
+        Err(e) => {
+            tracing::error!("❌ Combination error: {}", e);
+            Json(CombineResponse {
+                success: false,
+                output_path: String::new(),
+                content: None,
+                files_processed: 0,
+                total_size: 0,
+                duplicates: vec![],
+                log: vec![format!("❌ Error: {}", e)],
+            })
+        }
     }
 }
 

@@ -354,10 +354,13 @@ pub fn combine_uploaded_files(req: CombineRequest, uploaded_files: Vec<(String, 
     }
     let mut sorted_tree: Vec<_> = tree_paths.into_iter().collect();
     sorted_tree.sort();
+    
+    let file_set: HashSet<_> = files.iter().map(|f| &f.0).collect();
     for p in sorted_tree {
         let depth = p.split('/').count() - 1;
         let name = p.split('/').last().unwrap_or("");
-        combined.push_str(&format!("{}{} {}\n", "  ".repeat(depth), if files.iter().any(|f| f.0 == p) { "📄" } else { "📁" }, name));
+        let icon = if file_set.contains(&p) { "📄" } else { "📁" };
+        combined.push_str(&format!("{}{} {}\n", "  ".repeat(depth), icon, name));
     }
 
     combined.push_str("\n");
