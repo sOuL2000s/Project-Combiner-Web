@@ -136,7 +136,7 @@ Navigate to **http://localhost:5173** in your browser.
    - Linux/macOS: `/home/you/code/myapp`
    - Windows: `C:\Users\you\code\myapp` (use forward slashes in JSON: `C:/Users/you/code/myapp`)
 
-   Or click **Browse** to explore the filesystem.
+   Or click **Select Folder** to pick a folder from your local machine.
 
 2. **Output Path**  
    Where the combined `.txt` file will be written. Default is `combined_project_files.txt` in the root.

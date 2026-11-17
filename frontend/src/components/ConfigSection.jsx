@@ -1,7 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { browseDir } from '../api'
-
-const LS_KEY = 'combiner.lastFolder'
 
 function detectNativeFS() {
   if (typeof window === 'undefined') return false
@@ -20,25 +17,7 @@ function autoOutputPath(root) {
   return `${clean}${sep}combined_project_files.txt`
 }
 
-function parentOf(path) {
-  if (!path) return ''
-  const sep = path.includes('\\') ? '\\' : '/'
-  const trimmed = path.replace(/[\\/]+$/, '')
-  const parts = trimmed.split(/[\\/]/)
-  if (parts.length <= 1) return ''
-  parts.pop()
-  let parent = parts.join(sep)
-  if (!parent) parent = sep
-  if (/^[a-zA-Z]:$/.test(parent)) parent += sep
-  return parent
-}
-
 export default function ConfigSection({ state, setState, addLog }) {
-  const [showBrowse, setShowBrowse] = useState(false)
-  const [currentPath, setCurrentPath] = useState('')
-  const [entries, setEntries] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [browseError, setBrowseError] = useState('')
   const [nativeFolder, setNativeFolder] = useState(null)
   const [nativeSaved, setNativeSaved] = useState(null)
   const [nativeAvailable] = useState(detectNativeFS)
@@ -144,106 +123,6 @@ export default function ConfigSection({ state, setState, addLog }) {
     addLog('🧹 Native folder selection cleared.')
   }
 
-  // Robust directory loader — does NOT clear entries until the request resolves
-  async function loadDir(path) {
-    if (!path) {
-      addLog('❌ loadDir called with empty path')
-      return
-    }
-    setLoading(true)
-    setBrowseError('')
-    addLog(`📂 Loading: ${path}`)
-    try {
-      const res = await browseDir(path)
-      if (res && res.success) {
-        setEntries(Array.isArray(res.entries) ? res.entries : [])
-        setCurrentPath(path)
-        addLog(`✅ Loaded ${res.entries.length} entries from ${path}`)
-        try { localStorage.setItem(LS_KEY, path) } catch {}
-      } else {
-        const msg = (res && res.error) || 'unknown'
-        setBrowseError(msg)
-        addLog(`❌ Browse error: ${msg} (path: "${path}")`)
-        setEntries([])
-      }
-    } catch (e) {
-      setBrowseError(e.message || String(e))
-      addLog(`❌ Browse request failed: ${e.message || e} (path: "${path}")`)
-      setEntries([])
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  function openBrowser() {
-    let start = state.rootDir.trim()
-    if (start.startsWith('[Native folder]') || !start) {
-      try { start = localStorage.getItem(LS_KEY) || '' } catch {}
-    }
-    if (!start) {
-      start = navigator.userAgent.includes('Windows') ? 'C:/' : '/'
-    }
-    setShowBrowse(true)
-    loadDir(start)
-  }
-
-  // Navigate into a folder (does NOT clear entries first — smooth UX)
-  function pickDir(entry) {
-    if (!entry || !entry.path) {
-      addLog(`❌ Cannot open folder: missing path for "${entry?.name || '?'}"`)
-      return
-    }
-    addLog(`🖱️ Opening folder: ${entry.name}`)
-    loadDir(entry.path)
-  }
-
-  function goUp() {
-    const parent = parentOf(currentPath)
-    if (parent) loadDir(parent)
-  }
-
-  function jumpToDrive(drive) {
-    const normalized = /^[a-zA-Z]:$/.test(drive) ? drive + '/' : drive
-    addLog(`📂 Jumping to drive: ${normalized}`)
-    loadDir(normalized)
-  }
-
-  function applyCurrentAsRoot() {
-    const newOutput = autoOutputPath(currentPath)
-    setNativeFolder(null)
-    setState(s => ({ ...s, rootDir: currentPath, outputPath: newOutput }))
-    addLog(`✅ Project root set to: ${currentPath}`)
-    addLog(`📝 Output path set to: ${newOutput}`)
-    setShowBrowse(false)
-  }
-
-  const drives = navigator.userAgent.includes('Windows')
-    ? ['C:/', 'D:/', 'E:/', 'F:/', 'G:/', 'H:/']
-    : ['/']
-
-  const sep = currentPath.includes('\\') ? '\\' : '/'
-  const crumbs = (() => {
-    if (!currentPath) return []
-    const trimmed = currentPath.replace(/[\\/]+$/, '')
-    const parts = trimmed.split(/[\\/]/).filter(Boolean)
-    if (navigator.userAgent.includes('Windows') && /^[a-zA-Z]:/.test(parts[0] || '')) {
-      const out = [{ label: parts[0] + '/', path: parts[0] + '/' }]
-      let acc = parts[0]
-      for (let i = 1; i < parts.length; i++) {
-        acc += sep + parts[i]
-        out.push({ label: parts[i], path: acc })
-      }
-      return out
-    }
-    const out = [{ label: '/', path: '/' }]
-    let acc = ''
-    for (const p of parts) {
-      acc += sep + p
-      out.push({ label: p, path: acc })
-    }
-    return out
-  })()
-
   function onDragOver(e) {
     e.preventDefault()
     setDragOver(true)
@@ -312,12 +191,6 @@ export default function ConfigSection({ state, setState, addLog }) {
     }
   }
 
-  // Backend serializes is_dir (snake_case). Handle both defensively.
-  const isDir = (e) => e.is_dir === true || e.isDir === true
-
-  const dirs = entries.filter(isDir)
-  const files = entries.filter(e => !isDir(e))
-
   return (
     <div
       className={'card' + (dragOver ? ' drag-over' : '')}
@@ -363,9 +236,6 @@ export default function ConfigSection({ state, setState, addLog }) {
           <button className="btn btn-primary" onClick={handleNativePickFolder}>
             📁 Select Folder
           </button>
-          <button className="btn btn-ghost" onClick={openBrowser}>
-            🗂 Browse Server
-          </button>
         </div>
       </div>
 
@@ -383,75 +253,6 @@ export default function ConfigSection({ state, setState, addLog }) {
           <button className="ghost" onClick={clearNativeFolder} style={{ padding: '2px 10px', fontSize: 12 }}>
             Clear
           </button>
-        </div>
-      )}
-
-      {showBrowse && (
-        <div className="browse-panel">
-          <div className="browse-drives">
-            {drives.map(d => (
-              <button key={d} className="ghost" onClick={() => jumpToDrive(d)}>{d}</button>
-            ))}
-          </div>
-
-          <div className="browse-crumbs">
-            {crumbs.length === 0 ? (
-              <span className="crumb-sep">(no path)</span>
-            ) : (
-              crumbs.map((c, i) => (
-                <span key={i}>
-                  <button className="crumb" onClick={() => loadDir(c.path)}>{c.label}</button>
-                  {i < crumbs.length - 1 && <span className="crumb-sep">›</span>}
-                </span>
-              ))
-            )}
-          </div>
-
-          <div className="browse-actions">
-            <button className="ghost" onClick={goUp} disabled={!parentOf(currentPath)}>⬆ Up</button>
-            <button className="ghost" onClick={applyCurrentAsRoot} disabled={!currentPath}>
-              ✅ Use This Folder
-            </button>
-            <button className="ghost" onClick={() => setShowBrowse(false)}>✕ Close</button>
-          </div>
-
-          {browseError && (
-            <div className="msg err" style={{ marginBottom: 8, fontSize: 12 }}>
-              ⚠️ {browseError}
-            </div>
-          )}
-
-          <div className="browse-list">
-            {loading ? (
-              <div className="browse-empty">Loading…</div>
-            ) : entries.length === 0 ? (
-              <div className="browse-empty">Empty or unreadable.</div>
-            ) : (
-              <>
-                {dirs.map(e => (
-                  <div
-                    key={e.path || e.name}
-                    className="browse-item dir"
-                    onClick={() => pickDir(e)}
-                    title={`Open ${e.name}`}
-                  >
-                    <span className="browse-item-name">📁 {e.name}</span>
-                    <button
-                      className="browse-enter"
-                      onClick={(ev) => { ev.stopPropagation(); pickDir(e) }}
-                    >
-                      Enter ➔
-                    </button>
-                  </div>
-                ))}
-                {files.map(e => (
-                  <div key={e.path || e.name} className="browse-item file">
-                    <span className="browse-item-name">📄 {e.name}</span>
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
         </div>
       )}
 

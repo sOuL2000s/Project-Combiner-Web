@@ -284,7 +284,7 @@ export default function App() {
     const output = state.outputPath.trim()
 
     if (!root) {
-      addLog('❌ Project Root is empty. Click Browse or type a path.')
+      addLog('❌ Project Root is empty. Select a folder or type a path.')
       setLastResult({ success: false, files_processed: 0, output_path: '', log: [] })
       return
     }
