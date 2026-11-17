@@ -265,6 +265,162 @@ pub fn combine_files(req: CombineRequest) -> Result<CombineResponse, String> {
     Ok(CombineResponse {
         success: true,
         output_path: req.output_path,
+        content: None,
+        files_processed: processed.len(),
+        total_size,
+        duplicates,
+        log,
+    })
+}
+
+pub fn combine_uploaded_files(req: CombineRequest, uploaded_files: Vec<(String, String)>) -> Result<CombineResponse, String> {
+    let mut log: Vec<String> = vec![];
+    let mut combined: String = String::new();
+    let mut processed: Vec<String> = vec![];
+    let mut duplicates: Vec<DuplicatePair> = vec![];
+    let mut hashes: HashMap<String, String> = HashMap::new();
+    let mut total_size: u64 = 0;
+
+    log.push("🚀 Processing uploaded files...".to_string());
+
+    let excluded_dirs: HashSet<String> = req.excluded_dirs.iter().cloned().collect();
+    let excluded_files: HashSet<String> = req.excluded_files.iter().cloned().collect();
+    let included_dirs: HashSet<String> = req.included_dirs.iter().cloned().collect();
+    let included_files: HashSet<String> = req.included_files.iter().cloned().collect();
+    let use_include = !included_dirs.is_empty() || !included_files.is_empty();
+
+    let mut files = vec![];
+
+    for (rel, content) in uploaded_files {
+        let parts: Vec<&str> = rel.split('/').collect();
+        let name = parts.last().unwrap_or(&"").to_string();
+
+        // Exclude checks
+        if parts.iter().any(|s| excluded_dirs.contains(*s)) {
+            continue;
+        }
+        if excluded_files.contains(&name) {
+            continue;
+        }
+
+        // Include filters
+        if use_include {
+            let mut included = false;
+            if !included_files.is_empty() {
+                if included_files.contains(&name) || included_files.contains(&rel) {
+                    included = true;
+                }
+            } else if !included_dirs.is_empty() {
+                let dir_parts: Vec<&str> = parts[..parts.len().saturating_sub(1)].to_vec();
+                if dir_parts.iter().any(|s| included_dirs.contains(*s)) {
+                    included = true;
+                }
+            }
+            if !included {
+                continue;
+            }
+        }
+
+        // Size check
+        let size = content.len() as u64;
+        if let Some(max) = req.max_file_size {
+            if max > 0 && size > max {
+                log.push(format!("⏭️ Skipping large: {} ({} bytes)", rel, size));
+                continue;
+            }
+        }
+
+        files.push((rel, content, size));
+    }
+
+    if req.sort_files {
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    // Build combined text
+    let bar = "=".repeat(80);
+    combined.push_str(&bar);
+    combined.push_str("\n📁 PROJECT STRUCTURE (TREE VIEW)\n");
+    combined.push_str(&bar);
+    combined.push_str("\n\n");
+    
+    // Simple tree view for uploads
+    let mut tree_paths = HashSet::new();
+    for (rel, _, _) in &files {
+        let parts: Vec<&str> = rel.split('/').collect();
+        for i in 1..=parts.len() {
+            tree_paths.insert(parts[..i].join("/"));
+        }
+    }
+    let mut sorted_tree: Vec<_> = tree_paths.into_iter().collect();
+    sorted_tree.sort();
+    for p in sorted_tree {
+        let depth = p.split('/').count() - 1;
+        let name = p.split('/').last().unwrap_or("");
+        combined.push_str(&format!("{}{} {}\n", "  ".repeat(depth), if files.iter().any(|f| f.0 == p) { "📄" } else { "📁" }, name));
+    }
+
+    combined.push_str("\n");
+    combined.push_str(&bar);
+    combined.push_str("\n📄 FILE CONTENTS\n");
+    combined.push_str(&bar);
+    combined.push_str(&format!(
+        "\nGenerated: {}\nRoot: (uploaded)\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
+    combined.push_str(&bar);
+    combined.push_str("\n");
+
+    for (rel, content, size) in files {
+        let hash = md5_hash(&content);
+        if let Some(orig) = hashes.get(&hash) {
+            duplicates.push(DuplicatePair {
+                file: rel.clone(),
+                original: orig.clone(),
+            });
+        }
+        hashes.insert(hash, rel.clone());
+        total_size += size;
+
+        combined.push_str(&format!("\n--- START FILE: {} ---\n", rel));
+        if req.include_stats {
+            let lines = content.lines().count();
+            combined.push_str(&format!(
+                "# Size: {} bytes | Lines: {} | Modified: (uploaded)\n\n",
+                size, lines
+            ));
+        } else {
+            combined.push_str("\n");
+        }
+        combined.push_str(&content);
+        combined.push_str(&format!("\n--- END FILE: {} ---\n", rel));
+        processed.push(rel.clone());
+        log.push(format!("✅ Included: {}", rel));
+    }
+
+    // Summary
+    combined.push_str("\n");
+    combined.push_str(&bar);
+    combined.push_str("\n📊 SUMMARY\n");
+    combined.push_str(&bar);
+    combined.push_str(&format!(
+        "\nTotal files: {}\nTotal size: {} bytes\n",
+        processed.len(),
+        total_size
+    ));
+    if !duplicates.is_empty() {
+        combined.push_str("\n⚠️ DUPLICATE FILES DETECTED:\n");
+        for d in &duplicates {
+            combined.push_str(&format!("  - {} (duplicate of {})\n", d.file, d.original));
+        }
+    }
+    combined.push_str(&bar);
+    combined.push_str("\n");
+
+    Ok(CombineResponse {
+        success: true,
+        output_path: "combined_project_files.txt".to_string(),
+        content: Some(combined),
         files_processed: processed.len(),
         total_size,
         duplicates,

@@ -4,7 +4,7 @@ mod search;
 mod tree;
 
 use axum::{
-    extract::Query,
+    extract::{Multipart, Query},
     routing::{get, post},
     Json, Router,
 };
@@ -44,6 +44,7 @@ async fn main() {
         .route("/api/health", get(health))
         .route("/api/browse", post(browse_dir))
         .route("/api/combine", post(combine))
+        .route("/api/combine-upload", post(combine_upload))
         .route("/api/search", post(search_files))
         .route("/api/tree", post(get_tree))
         .route("/api/preview", get(preview_file))
@@ -100,6 +101,53 @@ async fn combine(Json(req): Json<CombineRequest>) -> Json<CombineResponse> {
         Err(e) => Json(CombineResponse {
             success: false,
             output_path: String::new(),
+            content: None,
+            files_processed: 0,
+            total_size: 0,
+            duplicates: vec![],
+            log: vec![format!("❌ Error: {}", e)],
+        }),
+    }
+}
+
+async fn combine_upload(mut multipart: Multipart) -> Json<CombineResponse> {
+    let mut files = vec![];
+    let mut config = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "config" {
+            if let Ok(bytes) = field.bytes().await {
+                if let Ok(req) = serde_json::from_slice::<CombineRequest>(&bytes) {
+                    config = Some(req);
+                }
+            }
+        } else if name == "files" {
+            let file_name = field.file_name().unwrap_or_default().to_string();
+            if let Ok(content) = field.text().await {
+                files.push((file_name, content));
+            }
+        }
+    }
+
+    let Some(req) = config else {
+        return Json(CombineResponse {
+            success: false,
+            output_path: String::new(),
+            content: None,
+            files_processed: 0,
+            total_size: 0,
+            duplicates: vec![],
+            log: vec!["❌ Error: Missing configuration in multipart request".to_string()],
+        });
+    };
+
+    match combiner::combine_uploaded_files(req, files) {
+        Ok(resp) => Json(resp),
+        Err(e) => Json(CombineResponse {
+            success: false,
+            output_path: String::new(),
+            content: None,
             files_processed: 0,
             total_size: 0,
             duplicates: vec![],

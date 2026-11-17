@@ -411,6 +411,118 @@ header.top button {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ===== Processing Overlay ===== */
+.processing-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(11, 15, 23, 0.9);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  color: #fff;
+  text-align: center;
+}
+
+.processing-content {
+  width: 100%;
+  max-width: 400px;
+  padding: 40px;
+}
+
+.blender-container {
+  margin-bottom: 30px;
+  display: flex;
+  justify-content: center;
+}
+
+.blender {
+  position: relative;
+  width: 100px;
+  height: 140px;
+}
+
+.blender-body {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 30px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px 10px 40px 40px;
+  overflow: hidden;
+}
+
+.blender-base {
+  position: absolute;
+  bottom: 0; left: 10px; right: 10px;
+  height: 30px;
+  background: #333;
+  border-radius: 5px;
+}
+
+.swirl {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 150%; height: 150%;
+  background: conic-gradient(from 0deg, transparent, var(--accent), transparent);
+  transform: translate(-50%, -50%);
+  animation: spin 1s linear infinite;
+  opacity: 0.3;
+}
+
+.file-icon {
+  position: absolute;
+  width: 30px;
+  height: 40px;
+  background: #fff;
+  color: #333;
+  font-size: 10px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+}
+
+.f1 { animation: fall 2s infinite; left: 10%; }
+.f2 { animation: fall 2.5s infinite 0.5s; left: 40%; }
+.f3 { animation: fall 1.8s infinite 1s; left: 70%; }
+.f4 { animation: fall 2.2s infinite 1.5s; left: 30%; }
+
+@keyframes fall {
+  0% { transform: translateY(-50px) rotate(0deg); opacity: 0; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { transform: translateY(80px) rotate(360deg); opacity: 0; }
+}
+
+.fun-msg {
+  height: 1.5em;
+  margin: 10px 0;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.progress-container {
+  height: 8px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 4px;
+  margin: 20px 0 10px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* ===== Responsive breakpoints ===== */
 
 /* Tablets / small laptops */

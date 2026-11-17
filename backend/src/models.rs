@@ -43,6 +43,7 @@ pub struct DuplicatePair {
 pub struct CombineResponse {
     pub success: bool,
     pub output_path: String,
+    pub content: Option<String>, // Added for uploads
     pub files_processed: usize,
     pub total_size: u64,
     pub duplicates: Vec<DuplicatePair>,

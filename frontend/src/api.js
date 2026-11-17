@@ -102,6 +102,115 @@ export async function* walkDirectoryHandle(dirHandle, opts) {
   }
 }
 
+// Walk a FileList (from <input webkitdirectory>). Yields { relPath, content }.
+export async function* walkFileList(fileList, opts) {
+  const {
+    excludedDirs = [],
+    excludedFiles = [],
+    maxFileSize = 0,
+    gitignorePatterns = []
+  } = opts || {}
+  const excludedDirsSet = new Set(excludedDirs)
+  const excludedFilesSet = new Set(excludedFiles)
+
+  function isGitignored(relPath, isDir) {
+    if (!gitignorePatterns.length) return false
+    let ignored = false
+    for (const { regex, negated, dirOnly } of gitignorePatterns) {
+      if (dirOnly && !isDir) continue
+      if (regex.test(relPath)) ignored = !negated
+    }
+    return ignored
+  }
+
+  for (const file of fileList) {
+    // webkitRelativePath is e.g. "folder/sub/file.txt"
+    const relPath = file.webkitRelativePath
+    const parts = relPath.split('/')
+    const name = parts[parts.length - 1]
+    const dirParts = parts.slice(0, -1)
+
+    // Check if any parent directory is excluded
+    if (dirParts.some(p => excludedDirsSet.has(p))) continue
+    if (excludedFilesSet.has(name)) continue
+
+    // Gitignore check (approximate for FileList)
+    if (isGitignored(relPath, false)) continue
+
+    if (maxFileSize > 0 && file.size > maxFileSize) continue
+
+    try {
+      const text = await file.text()
+      if (text.includes('\u0000')) continue
+      yield { relPath, content: text }
+    } catch {
+      continue
+    }
+  }
+}
+
+// Walk a webkitGetAsEntry() result (standard in all browsers for drag-and-drop).
+export async function* walkEntry(entry, opts) {
+  const {
+    excludedDirs = [],
+    excludedFiles = [],
+    maxFileSize = 0,
+    prefix = '',
+    gitignorePatterns = []
+  } = opts || {}
+  const excludedDirsSet = new Set(excludedDirs)
+  const excludedFilesSet = new Set(excludedFiles)
+
+  function isGitignored(relPath, isDir) {
+    if (!gitignorePatterns.length) return false
+    let ignored = false
+    for (const { regex, negated, dirOnly } of gitignorePatterns) {
+      if (dirOnly && !isDir) continue
+      if (regex.test(relPath)) ignored = !negated
+    }
+    return ignored
+  }
+
+  if (entry.isFile) {
+    if (excludedFilesSet.has(entry.name)) return
+    const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (isGitignored(relPath, false)) return
+
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject))
+    if (maxFileSize > 0 && file.size > maxFileSize) return
+    try {
+      const text = await file.text()
+      if (text.includes('\u0000')) return
+      yield { relPath, content: text }
+    } catch {
+      return
+    }
+  } else if (entry.isDirectory) {
+    if (excludedDirsSet.has(entry.name)) return
+    const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (isGitignored(relPath, true)) return
+
+    const reader = entry.createReader()
+    const entries = await new Promise((resolve, reject) => {
+      const results = []
+      const read = () => {
+        reader.readEntries(batch => {
+          if (batch.length === 0) resolve(results)
+          else {
+            results.push(...batch)
+            read()
+          }
+        }, reject)
+      }
+      read()
+    })
+
+    for (const child of entries) {
+      yield* walkEntry(child, { ...opts, prefix: relPath })
+    }
+  }
+}
+
 
 
 export async function browseDir(path) {
@@ -122,6 +231,22 @@ export async function combineFiles(payload) {
   return r.json()
 }
 
+export async function combineFilesUpload(payload, files) {
+  const formData = new FormData()
+  formData.append('config', JSON.stringify(payload))
+  for (const f of files) {
+    // f is { relPath, content }
+    const blob = new Blob([f.content], { type: 'text/plain' })
+    formData.append('files', blob, f.relPath)
+  }
+
+  const r = await fetch(`${BASE}/combine-upload`, {
+    method: 'POST',
+    body: formData
+  })
+  return r.json()
+}
+
 export async function searchFiles(payload) {
   const r = await fetch(`${BASE}/search`, {
     method: 'POST',
@@ -138,6 +263,25 @@ export async function getTree(payload) {
     body: JSON.stringify(payload)
   })
   return r.json()
+}
+
+// Build a visual tree string from a list of file objects { relPath }.
+export function buildTreeView(files, rootName) {
+  const treePaths = new Set()
+  for (const f of files) {
+    const parts = f.relPath.split('/')
+    for (let i = 1; i <= parts.length; i++) {
+      treePaths.add(parts.slice(0, i).join('/'))
+    }
+  }
+  const lines = [`${rootName}/`]
+  const sorted = Array.from(treePaths).sort()
+  for (const p of sorted) {
+    const depth = p.split('/').length - 1
+    const isFile = files.some(f => f.relPath === p)
+    lines.push('  '.repeat(depth) + (isFile ? '📄 ' : '📁 ') + p.split('/').pop())
+  }
+  return lines.join('\n')
 }
 
 // Copy text to the clipboard with a DOM fallback for older browsers.

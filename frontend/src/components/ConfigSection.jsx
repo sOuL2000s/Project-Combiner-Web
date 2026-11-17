@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { browseDir } from '../api'
 
 const LS_KEY = 'combiner.lastFolder'
@@ -43,9 +43,12 @@ export default function ConfigSection({ state, setState, addLog }) {
   const [nativeSaved, setNativeSaved] = useState(null)
   const [nativeAvailable] = useState(detectNativeFS)
   const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
     window.__combinerNativeDirHandle = nativeFolder?.handle || null
+    window.__combinerNativeFileList = nativeFolder?.fileList || null
+    window.__combinerNativeEntry = nativeFolder?.entry || null
   }, [nativeFolder])
 
   useEffect(() => {
@@ -53,37 +56,57 @@ export default function ConfigSection({ state, setState, addLog }) {
   }, [nativeSaved])
 
   useEffect(() => {
-    if (!state.rootDir.startsWith('[Native folder]')) {
+    if (!state.rootDir.startsWith('[Native folder]') && !state.rootDir.startsWith('[Selected folder]')) {
       if (nativeFolder) setNativeFolder(null)
     }
   }, [state.rootDir])
 
   async function handleNativePickFolder() {
-    if (!nativeAvailable) {
-      addLog('❌ This browser does not support the native folder picker. Use Chrome or Edge.')
-      return
-    }
-    let picked
-    try {
-      const handle = await window.showDirectoryPicker({ mode: 'read' })
-      picked = { handle, pathHint: handle.name }
-    } catch (e) {
-      if (e && e.name === 'AbortError') {
-        addLog('ℹ️ Native folder picker cancelled.')
+    if (nativeAvailable) {
+      try {
+        const handle = await window.showDirectoryPicker({ mode: 'read' })
+        const picked = { handle, pathHint: handle.name }
+        setNativeFolder(picked)
+        setNativeSaved(null)
+        setState(s => ({
+          ...s,
+          rootDir: `[Native folder] ${picked.pathHint}`,
+          outputPath: 'combined_project_files.txt'
+        }))
+        addLog(`📁 Native folder selected: ${picked.pathHint}`)
         return
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          addLog('ℹ️ Native folder picker cancelled.')
+          return
+        }
+        addLog(`❌ Native folder error: ${e.name || ''} ${e.message || e}. Falling back to standard upload.`)
       }
-      addLog(`❌ Native folder error: ${e.name || ''} ${e.message || e}`)
-      return
     }
-    if (!picked) return
+    
+    // Fallback to standard input
+    if (fileInputRef.current) {
+      fileInputRef.current.click()
+    }
+  }
+
+  function handleFileInputChange(e) {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    
+    // Get the root folder name from the first file's relative path
+    const firstPath = files[0].webkitRelativePath
+    const folderName = firstPath.split('/')[0] || 'Selected Folder'
+    
+    const picked = { fileList: files, pathHint: folderName }
     setNativeFolder(picked)
     setNativeSaved(null)
     setState(s => ({
       ...s,
-      rootDir: `[Native folder] ${picked.pathHint}`,
+      rootDir: `[Selected folder] ${folderName}`,
       outputPath: 'combined_project_files.txt'
     }))
-    addLog(`📁 Native folder selected: ${picked.pathHint}`)
+    addLog(`📁 Folder selected via upload: ${folderName} (${files.length} files)`)
   }
 
   async function handleNativeSaveFile() {
@@ -234,27 +257,58 @@ export default function ConfigSection({ state, setState, addLog }) {
   async function onDrop(e) {
     e.preventDefault()
     setDragOver(false)
-    const item = e.dataTransfer.items?.[0]
-    if (!item || item.kind !== 'file' || typeof item.getAsFileSystemHandle !== 'function') {
-      addLog('❌ Drag-and-drop of folders requires Chrome or Edge.')
-      return
+    
+    const items = e.dataTransfer.items
+    if (!items || items.length === 0) return
+
+    // Try File System Access API first (Chrome/Edge)
+    if (typeof items[0].getAsFileSystemHandle === 'function') {
+      try {
+        const handle = await items[0].getAsFileSystemHandle()
+        if (handle && handle.kind === 'directory') {
+          setNativeFolder({ handle, pathHint: handle.name })
+          setNativeSaved(null)
+          setState(s => ({
+            ...s,
+            rootDir: `[Native folder] ${handle.name}`,
+            outputPath: 'combined_project_files.txt'
+          }))
+          addLog(`📁 Dropped folder (native): ${handle.name}`)
+          return
+        }
+      } catch (err) {
+        console.warn('getAsFileSystemHandle failed', err)
+      }
     }
-    try {
-      const handle = await item.getAsFileSystemHandle()
-      if (!handle || handle.kind !== 'directory') {
-        addLog('❌ Please drop a folder, not a file.')
+
+    // Fallback to webkitGetAsEntry (Chrome, Firefox, Safari)
+    if (typeof items[0].webkitGetAsEntry === 'function') {
+      const entry = items[0].webkitGetAsEntry()
+      if (entry && entry.isDirectory) {
+        setNativeFolder({ entry, pathHint: entry.name })
+        setNativeSaved(null)
+        setState(s => ({
+          ...s,
+          rootDir: `[Dropped folder] ${entry.name}`,
+          outputPath: 'combined_project_files.txt'
+        }))
+        addLog(`📁 Dropped folder: ${entry.name}`)
         return
       }
-      setNativeFolder({ handle, pathHint: handle.name })
+    }
+
+    // Last resort: standard files (will be treated as a list of files)
+    const files = e.dataTransfer.files
+    if (files && files.length > 0) {
+      const picked = { fileList: files, pathHint: 'Dropped Files' }
+      setNativeFolder(picked)
       setNativeSaved(null)
       setState(s => ({
         ...s,
-        rootDir: `[Native folder] ${handle.name}`,
+        rootDir: `[Dropped files]`,
         outputPath: 'combined_project_files.txt'
       }))
-      addLog(`📁 Dropped folder: ${handle.name}`)
-    } catch (err) {
-      addLog(`❌ Could not read dropped folder: ${err.message || err}`)
+      addLog(`📁 Dropped ${files.length} files`)
     }
   }
 
@@ -295,15 +349,22 @@ export default function ConfigSection({ state, setState, addLog }) {
                 }
               })
             }}
-            placeholder="e.g. D:/72 projects of python/my-project"
+            placeholder="e.g. D:/my-project or select a folder"
           />
-          {nativeAvailable && (
-            <button className="btn btn-secondary" onClick={handleNativePickFolder}>
-              📁 Choose
-            </button>
-          )}
+          <input
+            type="file"
+            webkitdirectory="true"
+            directory="true"
+            multiple
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+            onChange={handleFileInputChange}
+          />
+          <button className="btn btn-primary" onClick={handleNativePickFolder}>
+            📁 Select Folder
+          </button>
           <button className="btn btn-ghost" onClick={openBrowser}>
-            🗂 Browse
+            🗂 Browse Server
           </button>
         </div>
       </div>
@@ -311,14 +372,8 @@ export default function ConfigSection({ state, setState, addLog }) {
       {state.rootDir && (
         <div className={`mode-badge ${nativeFolder ? 'native' : 'server'}`}>
           {nativeFolder
-            ? '🌐 Native mode — reads in your browser, saves via OS dialog'
-            : '🖥 Server mode — backend reads the path on disk'}
-        </div>
-      )}
-
-      {!nativeAvailable && (
-        <div className="msg warn" style={{ marginTop: 6 }}>
-          ⚠️ Your browser doesn't support the OS-native folder picker.
+            ? '🌐 Upload mode — files are uploaded and processed by the backend'
+            : '🖥 Server mode — backend reads the path from the server disk'}
         </div>
       )}
 

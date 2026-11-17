@@ -6,7 +6,17 @@ import SearchSection from './components/SearchSection'
 import FileTree from './components/FileTree'
 import LogPanel from './components/LogPanel'
 import PreviewModal from './components/PreviewModal'
-import { combineFiles, copyToClipboard, walkDirectoryHandle as walkDirHandle, parseGitignore } from './api'
+import ProcessingOverlay from './components/ProcessingOverlay'
+import {
+  combineFiles,
+  combineFilesUpload,
+  copyToClipboard,
+  walkDirectoryHandle as walkDirHandle,
+  walkFileList,
+  walkEntry,
+  parseGitignore,
+  buildTreeView
+} from './api'
 
 const DEFAULT_STATE = {
   rootDir: '',
@@ -26,24 +36,6 @@ async function writeToHandle(handle, contents) {
   const writable = await handle.createWritable()
   await writable.write(contents)
   await writable.close()
-}
-
-function buildTreeView(files, rootName) {
-  const treePaths = new Set()
-  for (const f of files) {
-    const parts = f.relPath.split('/')
-    for (let i = 1; i <= parts.length; i++) {
-      treePaths.add(parts.slice(0, i).join('/'))
-    }
-  }
-  const lines = [`${rootName}/`]
-  const sorted = Array.from(treePaths).sort()
-  for (const p of sorted) {
-    const depth = p.split('/').length - 1
-    const isFile = files.some(f => f.relPath === p)
-    lines.push('  '.repeat(depth) + (isFile ? '📄 ' : '📁 ') + p.split('/').pop())
-  }
-  return lines.join('\n')
 }
 
 function buildCombinedText(files, state, rootName) {
@@ -124,9 +116,12 @@ export default function App() {
 
   async function combineNative() {
     const dirHandle = window.__combinerNativeDirHandle
+    const fileList = window.__combinerNativeFileList
+    const entry = window.__combinerNativeEntry
     const saveHandle = window.__combinerNativeSaveHandle
-    if (!dirHandle) {
-      addLog('❌ Native folder handle missing — pick the folder again.')
+
+    if (!dirHandle && !fileList && !entry) {
+      addLog('❌ No folder selected — pick or drop a folder first.')
       setLastResult({ success: false, files_processed: 0, output_path: '', log: [] })
       return
     }
@@ -143,14 +138,27 @@ export default function App() {
       const maxSize = parseInt(state.maxFileSize) || 0
       const useInclude = includedDirs.length > 0 || includedFiles.length > 0
 
-      // Load .gitignore patterns if the toggle is on. Missing file = no patterns.
+      // Load .gitignore patterns if the toggle is on.
       let gitignorePatterns = []
       if (state.useGitignore) {
         try {
-          const giHandle = await dirHandle.getFileHandle('.gitignore')
-          const giFile = await giHandle.getFile()
-          gitignorePatterns = parseGitignore(await giFile.text())
-          addLog(`📄 Loaded ${gitignorePatterns.length} .gitignore pattern(s)`)
+          let giText = ''
+          if (dirHandle) {
+            const giHandle = await dirHandle.getFileHandle('.gitignore')
+            const giFile = await giHandle.getFile()
+            giText = await giFile.text()
+          } else if (fileList) {
+            const giFile = Array.from(fileList).find(f => f.name === '.gitignore' || f.webkitRelativePath.endsWith('/.gitignore'))
+            if (giFile) giText = await giFile.text()
+          } else if (entry) {
+            // For entry, we'd need to search for .gitignore. For now, skip or implement search.
+            addLog('ℹ️ .gitignore support for dropped folders is limited.')
+          }
+          
+          if (giText) {
+            gitignorePatterns = parseGitignore(giText)
+            addLog(`📄 Loaded ${gitignorePatterns.length} .gitignore pattern(s)`)
+          }
         } catch {
           addLog('ℹ️ No .gitignore found in project root — toggle has no effect')
         }
@@ -158,31 +166,76 @@ export default function App() {
 
       const files = []
       const t0 = Date.now()
-      for await (const item of walkDirHandle(dirHandle, {
+      const walkOpts = {
         excludedDirs,
         excludedFiles,
         maxFileSize: maxSize,
         gitignorePatterns
-      })) {
-        if (useInclude) {
+      }
+
+      let rootName = 'project'
+      if (dirHandle) {
+        rootName = dirHandle.name
+        for await (const item of walkDirHandle(dirHandle, walkOpts)) {
+          files.push(item)
+        }
+      } else if (fileList) {
+        rootName = fileList[0]?.webkitRelativePath.split('/')[0] || 'project'
+        for await (const item of walkFileList(fileList, walkOpts)) {
+          files.push(item)
+        }
+      } else if (entry) {
+        rootName = entry.name
+        for await (const item of walkEntry(entry, walkOpts)) {
+          files.push(item)
+        }
+      }
+
+      addLog(`📦 Gathered ${files.length} files in ${Date.now() - t0}ms`)
+
+      if (useInclude) {
+        // Filter files based on include rules
+        const filtered = files.filter(item => {
           const parts = item.relPath.split('/')
           const name = parts[parts.length - 1]
           const dirParts = parts.slice(0, -1)
           if (includedFiles.length > 0) {
-            if (!includedFiles.includes(name)) continue
+            return includedFiles.includes(name)
           } else if (includedDirs.length > 0) {
-            if (!dirParts.some(p => includedDirs.includes(p))) continue
+            return dirParts.some(p => includedDirs.includes(p))
           }
-        }
-        files.push(item)
+          return true
+        })
+        files.length = 0
+        files.push(...filtered)
+        addLog(`🎯 Filtered down to ${files.length} files based on include rules`)
       }
-      addLog(`📦 Gathered ${files.length} files in ${Date.now() - t0}ms`)
 
       if (state.sortFiles) files.sort((a, b) => a.relPath.localeCompare(b.relPath))
 
-      const { text, duplicates, totalSize } = buildCombinedText(files, state, dirHandle.name)
+      addLog('📤 Sending files to backend for processing...')
+      const payload = {
+        root_dir: rootName,
+        output_path: 'combined_project_files.txt',
+        excluded_dirs: excludedDirs,
+        excluded_files: excludedFiles,
+        included_dirs: includedDirs,
+        included_files: includedFiles,
+        max_file_size: maxSize,
+        include_stats: state.includeStats,
+        sort_files: state.sortFiles,
+        use_gitignore: state.useGitignore
+      }
 
-      let savedPath = '(in-browser)'
+      const res = await combineFilesUpload(payload, files)
+      
+      if (!res.success) {
+        throw new Error(res.log.join('\n') || 'Backend processing failed')
+      }
+
+      const text = res.content || ''
+      let savedPath = '(uploaded & processed by backend)'
+      
       if (saveHandle) {
         await writeToHandle(saveHandle, text)
         savedPath = `[Native file] ${saveHandle.name}`
@@ -204,15 +257,16 @@ export default function App() {
       window.__combinerLastOutput = text
       setLastResult({
         success: true,
-        files_processed: files.length,
-        total_size: totalSize,
+        files_processed: res.files_processed,
+        total_size: res.total_size,
         output_path: savedPath,
-        duplicates,
-        log: []
+        duplicates: res.duplicates,
+        log: res.log
       })
-      addLog(`✅ Combined ${files.length} files → ${savedPath}`)
+      addLog(`✅ Backend processed ${res.files_processed} files → ${savedPath}`)
     } catch (e) {
-      addLog(`❌ Native combine error: ${e.name || ''} ${e.message || e}`)
+      addLog(`❌ Error: ${e.name || ''} ${e.message || e}`)
+      console.error(e)
       setLastResult({ success: false, files_processed: 0, output_path: '', log: [] })
     } finally {
       setProcessing(false)
@@ -220,8 +274,8 @@ export default function App() {
   }
 
   async function handleCombine() {
-    // Route to native pipeline ONLY if a native handle is actually present
-    if (window.__combinerNativeDirHandle) {
+    // Route to native pipeline if any native source is present
+    if (window.__combinerNativeDirHandle || window.__combinerNativeFileList || window.__combinerNativeEntry) {
       return combineNative()
     }
 
@@ -356,6 +410,24 @@ export default function App() {
     }
   }
 
+  function handleDownload() {
+    const text = window.__combinerLastOutput
+    if (!text) {
+      addLog('⚠️ No combined output to download yet.')
+      return
+    }
+    const blob = new Blob([text], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'combined_project_files.txt'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    addLog('💾 Downloaded as combined_project_files.txt')
+  }
+
   return (
     <div className="app">
       <Header theme={theme} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />
@@ -397,6 +469,13 @@ export default function App() {
           </button>
           <button
             className="action-btn"
+            style={{ flex: 1, background: 'var(--bg2)', color: 'var(--fg)', border: '1px solid var(--border)' }}
+            onClick={handleDownload}
+          >
+            📥 Download
+          </button>
+          <button
+            className="action-btn"
             style={{
               flex: 1,
               background: copied ? 'var(--success)' : 'var(--bg2)',
@@ -408,7 +487,7 @@ export default function App() {
             onClick={handleCopy}
             disabled={copied}
           >
-            {copied ? '✅ Copied!' : '📋 Copy to Clipboard'}
+            {copied ? '✅ Copied!' : '📋 Copy'}
           </button>
         </div>
       )}
@@ -425,6 +504,7 @@ export default function App() {
         content={previewContent}
         onClose={() => setPreviewOpen(false)}
       />
+      <ProcessingOverlay processing={processing} />
     </div>
   )
 }
